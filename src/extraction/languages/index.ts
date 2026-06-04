@@ -26,6 +26,8 @@ import { scalaExtractor } from './scala';
 import { luaExtractor } from './lua';
 import { luauExtractor } from './luau';
 import { objcExtractor } from './objc';
+import { hlslExtractor } from './hlsl';
+import { glslExtractor } from './glsl';
 
 export const EXTRACTORS: Partial<Record<Language, LanguageExtractor>> = {
   typescript: typescriptExtractor,
@@ -49,4 +51,6 @@ export const EXTRACTORS: Partial<Record<Language, LanguageExtractor>> = {
   lua: luaExtractor,
   luau: luauExtractor,
   objc: objcExtractor,
+  hlsl: hlslExtractor,
+  glsl: glslExtractor,
 };

@@ -88,6 +88,8 @@ export const LANGUAGES = [
   'lua',
   'luau',
   'objc',
+  'hlsl',
+  'glsl',
   'yaml',
   'twig',
   'xml',
