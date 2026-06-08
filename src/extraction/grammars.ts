@@ -129,12 +129,20 @@ export const EXTENSION_MAP: Record<string, Language> = {
  * Whether a file is one CodeGraph can parse, based purely on its extension.
  * This is the single source of truth for "should we index this file" — derived
  * from EXTENSION_MAP so parser support and indexing selection never drift.
+ *
+ * When `excludeLanguages` is provided, files whose detected language is in
+ * that set are excluded. This allows per-project filtering (e.g. skip Python
+ * and Lua in UE projects) without modifying the global EXTENSION_MAP.
  */
-export function isSourceFile(filePath: string): boolean {
+export function isSourceFile(filePath: string, excludeLanguages?: Set<Language>): boolean {
   if (isPlayRoutesFile(filePath)) return true; // Play `conf/routes` is extensionless
   const dot = filePath.lastIndexOf('.');
   if (dot < 0) return false;
-  return filePath.slice(dot).toLowerCase() in EXTENSION_MAP;
+  const ext = filePath.slice(dot).toLowerCase();
+  const lang = EXTENSION_MAP[ext];
+  if (!lang) return false;
+  if (excludeLanguages && excludeLanguages.has(lang)) return false;
+  return true;
 }
 
 /**

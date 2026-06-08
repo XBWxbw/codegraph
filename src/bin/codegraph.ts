@@ -419,7 +419,8 @@ program
   .description('Initialize CodeGraph in a project directory and build the initial index')
   .option('-i, --index', 'Deprecated: indexing now runs by default; flag accepted for backward compatibility')
   .option('-v, --verbose', 'Show detailed worker lifecycle and memory info')
-  .action(async (pathArg: string | undefined, options: { index?: boolean; verbose?: boolean }) => {
+  .option('--exclude-languages <languages>', 'Comma-separated list of languages to exclude from indexing (e.g. "python,lua")')
+  .action(async (pathArg: string | undefined, options: { index?: boolean; verbose?: boolean; excludeLanguages?: string }) => {
     const projectPath = path.resolve(pathArg || process.cwd());
     const clack = await importESM('@clack/prompts');
 
@@ -435,6 +436,15 @@ program
         } catch { /* non-fatal */ }
         clack.outro('');
         return;
+      }
+
+      // Save config with excludeLanguages BEFORE init, so the orchestrator
+      // picks it up when CodeGraph.init() creates ExtractionOrchestrator.
+      if (options.excludeLanguages) {
+        const { saveConfig } = await import('../config');
+        const languages = options.excludeLanguages.split(',').map((l: string) => l.trim()).filter(Boolean);
+        saveConfig(projectPath, { excludeLanguages: languages as any[] });
+        clack.log.info(`Excluding languages: ${languages.join(', ')}`);
       }
 
       const { default: CodeGraph } = await loadCodeGraph();
@@ -536,8 +546,17 @@ program
   .option('-f, --force', 'Force full re-index even if already indexed')
   .option('-q, --quiet', 'Suppress progress output')
   .option('-v, --verbose', 'Show detailed worker lifecycle and memory info')
-  .action(async (pathArg: string | undefined, options: { force?: boolean; quiet?: boolean; verbose?: boolean }) => {
+  .option('--exclude-languages <languages>', 'Comma-separated list of languages to exclude from indexing (e.g. "python,lua"). Updates .codegraph/config.json.')
+  .action(async (pathArg: string | undefined, options: { force?: boolean; quiet?: boolean; verbose?: boolean; excludeLanguages?: string }) => {
     const projectPath = resolveProjectPath(pathArg);
+
+    // Save config with excludeLanguages before opening CodeGraph
+    if (options.excludeLanguages) {
+      const { saveConfig, loadConfig } = await import('../config');
+      const existing = loadConfig(projectPath);
+      const languages = options.excludeLanguages.split(',').map((l: string) => l.trim()).filter(Boolean);
+      saveConfig(projectPath, { ...existing, excludeLanguages: languages as any[] });
+    }
 
     try {
       if (!isInitialized(projectPath)) {

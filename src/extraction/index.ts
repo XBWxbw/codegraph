@@ -225,6 +225,31 @@ function collectGitFiles(repoDir: string, prefix: string, files: Set<string>): v
     }
     files.add(normalizePath(prefix + rel));
   }
+
+  // TMR / nested-repo workaround: .gitignore may hide directories that contain
+  // their own .git repos (e.g. a parent repo ignores child repo dirs). Git with
+  // --exclude-standard won't list those dirs at all, so we do a separate pass
+  // without --exclude-standard to discover nested repos that gitignored paths
+  // shadow. We still respect .gitignore for regular files — only recurse into
+  // directories that contain a .git and are not visible above.
+  const ignored = execFileSync('git', ['ls-files', '-z', '-o'], gitOpts);
+  for (const rel of ignored.split('\0')) {
+    if (!rel || !rel.endsWith('/')) continue;
+    const childDir = path.join(repoDir, rel);
+    if (fs.existsSync(path.join(childDir, '.git'))) {
+      // Already discovered in the untracked pass above? Skip.
+      const prefixed = normalizePath(prefix + rel);
+      // Quick heuristic: if any file under this prefix was already added, skip
+      // (more robust than maintaining a separate set just for dirs).
+      let alreadyAdded = false;
+      for (const f of files) {
+        if (f.startsWith(prefixed)) { alreadyAdded = true; break; }
+      }
+      if (!alreadyAdded) {
+        collectGitFiles(childDir, prefix + rel, files);
+      }
+    }
+  }
 }
 
 /**
@@ -286,7 +311,7 @@ interface GitChanges {
  * Use `git status` to detect changed files instead of scanning every file.
  * Returns null on failure so callers fall back to full scan.
  */
-function getGitChangedFiles(rootDir: string): GitChanges | null {
+function getGitChangedFiles(rootDir: string, excludeLanguages?: Set<Language>): GitChanges | null {
   try {
     const output = execFileSync(
       'git',
@@ -305,7 +330,7 @@ function getGitChangedFiles(rootDir: string): GitChanges | null {
       const filePath = normalizePath(line.substring(3));
 
       // Skip non-source files (git status already omits .gitignored paths).
-      if (!isSourceFile(filePath)) continue;
+      if (!isSourceFile(filePath, excludeLanguages)) continue;
 
       if (statusCode === '??') {
         added.push(filePath);
@@ -332,7 +357,8 @@ function getGitChangedFiles(rootDir: string): GitChanges | null {
  */
 export function scanDirectory(
   rootDir: string,
-  onProgress?: (current: number, file: string) => void
+  onProgress?: (current: number, file: string) => void,
+  excludeLanguages?: Set<Language>
 ): string[] {
   // Fast path: use git to get all visible files (respects .gitignore everywhere)
   const gitFiles = getGitVisibleFiles(rootDir);
@@ -340,7 +366,7 @@ export function scanDirectory(
     const files: string[] = [];
     let count = 0;
     for (const filePath of gitFiles) {
-      if (isSourceFile(filePath)) {
+      if (isSourceFile(filePath, excludeLanguages)) {
         files.push(filePath);
         count++;
         onProgress?.(count, filePath);
@@ -350,7 +376,7 @@ export function scanDirectory(
   }
 
   // Fallback: walk filesystem for non-git projects
-  return scanDirectoryWalk(rootDir, onProgress);
+  return scanDirectoryWalk(rootDir, onProgress, excludeLanguages);
 }
 
 /**
@@ -359,14 +385,15 @@ export function scanDirectory(
  */
 export async function scanDirectoryAsync(
   rootDir: string,
-  onProgress?: (current: number, file: string) => void
+  onProgress?: (current: number, file: string) => void,
+  excludeLanguages?: Set<Language>
 ): Promise<string[]> {
   const gitFiles = getGitVisibleFiles(rootDir);
   if (gitFiles) {
     const files: string[] = [];
     let count = 0;
     for (const filePath of gitFiles) {
-      if (isSourceFile(filePath)) {
+      if (isSourceFile(filePath, excludeLanguages)) {
         files.push(filePath);
         count++;
         onProgress?.(count, filePath);
@@ -379,7 +406,7 @@ export async function scanDirectoryAsync(
     return files;
   }
 
-  return scanDirectoryWalk(rootDir, onProgress);
+  return scanDirectoryWalk(rootDir, onProgress, excludeLanguages);
 }
 
 /**
@@ -387,7 +414,8 @@ export async function scanDirectoryAsync(
  */
 function scanDirectoryWalk(
   rootDir: string,
-  onProgress?: (current: number, file: string) => void
+  onProgress?: (current: number, file: string) => void,
+  excludeLanguages?: Set<Language>
 ): string[] {
   const files: string[] = [];
   let count = 0;
@@ -469,7 +497,7 @@ function scanDirectoryWalk(
               walk(fullPath, active);
             }
           } else if (stat.isFile()) {
-            if (!isIgnored(fullPath, false, active) && isSourceFile(relativePath)) {
+            if (!isIgnored(fullPath, false, active) && isSourceFile(relativePath, excludeLanguages)) {
               files.push(relativePath);
               count++;
               onProgress?.(count, relativePath);
@@ -486,7 +514,7 @@ function scanDirectoryWalk(
           walk(fullPath, active);
         }
       } else if (entry.isFile()) {
-        if (!isIgnored(fullPath, false, active) && isSourceFile(relativePath)) {
+        if (!isIgnored(fullPath, false, active) && isSourceFile(relativePath, excludeLanguages)) {
           files.push(relativePath);
           count++;
           onProgress?.(count, relativePath);
@@ -514,10 +542,16 @@ export class ExtractionOrchestrator {
    * hasn't run yet so single-file re-index paths can detect on the spot.
    */
   private detectedFrameworkNames: string[] | null = null;
+  /**
+   * Languages excluded from indexing via .codegraph/config.json.
+   * Files in these languages are skipped during scanning.
+   */
+  private excludeLanguages: Set<Language>;
 
-  constructor(rootDir: string, queries: QueryBuilder) {
+  constructor(rootDir: string, queries: QueryBuilder, excludeLanguages?: Language[]) {
     this.rootDir = rootDir;
     this.queries = queries;
+    this.excludeLanguages = new Set(excludeLanguages ?? []);
   }
 
   /**
@@ -583,7 +617,7 @@ export class ExtractionOrchestrator {
    */
   private ensureDetectedFrameworks(files?: string[]): string[] {
     if (this.detectedFrameworkNames !== null) return this.detectedFrameworkNames;
-    const fileList = files ?? scanDirectory(this.rootDir);
+    const fileList = files ?? scanDirectory(this.rootDir, undefined, this.excludeLanguages.size > 0 ? this.excludeLanguages : undefined);
     const context = this.buildDetectionContext(fileList);
     this.detectedFrameworkNames = detectFrameworks(context).map((r) => r.name);
     return this.detectedFrameworkNames;
@@ -624,7 +658,7 @@ export class ExtractionOrchestrator {
         total: 0,
         currentFile: file,
       });
-    });
+    }, this.excludeLanguages.size > 0 ? this.excludeLanguages : undefined);
 
     // Detect frameworks once per indexAll run using the scanned file list.
     // Names are passed to each parse call so framework-specific extractors
@@ -1352,7 +1386,7 @@ export class ExtractionOrchestrator {
     // whether or not the project uses git, and crucially also catches committed
     // changes from `git pull`/`checkout`/`merge`/`rebase` — which `git status`
     // cannot see, because the working tree is clean afterward.
-    const currentFiles = scanDirectory(this.rootDir);
+    const currentFiles = scanDirectory(this.rootDir, undefined, this.excludeLanguages.size > 0 ? this.excludeLanguages : undefined);
     filesChecked = currentFiles.length;
     const currentSet = new Set(currentFiles);
 
@@ -1456,7 +1490,7 @@ export class ExtractionOrchestrator {
    * Uses git status as a fast path when available, falling back to full scan.
    */
   getChangedFiles(): { added: string[]; modified: string[]; removed: string[] } {
-    const gitChanges = getGitChangedFiles(this.rootDir);
+    const gitChanges = getGitChangedFiles(this.rootDir, this.excludeLanguages.size > 0 ? this.excludeLanguages : undefined);
 
     if (gitChanges) {
       // === Git fast path ===
@@ -1500,7 +1534,7 @@ export class ExtractionOrchestrator {
     }
 
     // === Fallback: full scan (non-git project or git failure) ===
-    const currentFiles = new Set(scanDirectory(this.rootDir));
+    const currentFiles = new Set(scanDirectory(this.rootDir, undefined, this.excludeLanguages.size > 0 ? this.excludeLanguages : undefined));
     const trackedFiles = this.queries.getAllFiles();
 
     // Build Map for O(1) lookups

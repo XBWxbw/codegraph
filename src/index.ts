@@ -30,6 +30,7 @@ import {
   removeDirectory,
   validateDirectory,
 } from './directory';
+import { loadConfig } from './config';
 import {
   ExtractionOrchestrator,
   IndexProgress,
@@ -154,7 +155,8 @@ export class CodeGraph {
     this.fileLock = new FileLock(
       path.join(projectRoot, '.codegraph', 'codegraph.lock')
     );
-    this.orchestrator = new ExtractionOrchestrator(projectRoot, queries);
+    const config = loadConfig(projectRoot);
+    this.orchestrator = new ExtractionOrchestrator(projectRoot, queries, config.excludeLanguages);
     this.resolver = createResolver(projectRoot, queries);
     this.graphManager = new GraphQueryManager(queries);
     this.traverser = new GraphTraverser(queries);
